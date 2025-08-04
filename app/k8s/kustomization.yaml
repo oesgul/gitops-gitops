@@ -1,0 +1,21 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+- deployment.yaml
+- service.yaml
+- route.yaml
+- configmap.yaml
+
+commonLabels:
+  app: image-recognition-app
+  component: backend
+
+namespace: image-recognition
+
+images:
+- name: image-recognition-app
+  newTag: latest
+
+generatorOptions:
+  disableNameSuffixHash: true

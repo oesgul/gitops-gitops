@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: image-recognition-app
+  labels:
+    app: image-recognition-app
+    version: v1
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: image-recognition-app
+  template:
+    metadata:
+      labels:
+        app: image-recognition-app
+        version: v1
+    spec:
+      containers:
+      - name: image-recognition-app
+        image: image-recognition-app:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 5000
+          name: http
+        env:
+        - name: FLASK_ENV
+          value: "production"
+        - name: LOG_LEVEL
+          value: "INFO"
+        - name: MAX_CONTENT_LENGTH
+          value: "16777216"  # 16MB
+        - name: CONFIDENCE_THRESHOLD
+          value: "0.5"
+        - name: MAX_DETECTIONS
+          value: "10"
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 5000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 5000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        volumeMounts:
+        - name: uploads
+          mountPath: /app/uploads
+      volumes:
+      - name: uploads
+        emptyDir: {}
+      serviceAccountName: image-recognition-app
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: image-recognition-app
+  labels:
+    app: image-recognition-app

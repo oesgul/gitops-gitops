@@ -1,0 +1,185 @@
+pipeline {
+    agent any
+    
+    environment {
+        APP_NAME = 'image-recognition-app'
+        REGISTRY = 'your-registry.com'
+        IMAGE_TAG = "${BUILD_NUMBER}"
+    }
+    
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+        
+        stage('Build Application') {
+            steps {
+                dir('app') {
+                    script {
+                        // Build Docker image
+                        sh "docker build -t ${APP_NAME}:${IMAGE_TAG} ."
+                        sh "docker tag ${APP_NAME}:${IMAGE_TAG} ${APP_NAME}:latest"
+                    }
+                }
+            }
+        }
+        
+        stage('Run Tests') {
+            steps {
+                dir('app') {
+                    script {
+                        // Run unit tests
+                        sh """
+                            python -m venv venv
+                            source venv/bin/activate
+                            pip install -r requirements.txt
+                            python -m pytest tests/ -v --cov=src --cov-report=xml --cov-report=term
+                        """
+                    }
+                }
+            }
+            post {
+                always {
+                    // Publish test results
+                    publishTestResults testResultsPattern: 'app/coverage.xml'
+                    publishHTML([
+                        allowMissing: false,
+                        alwaysLinkToLastBuild: true,
+                        keepAll: true,
+                        reportDir: 'app/htmlcov',
+                        reportFiles: 'index.html',
+                        reportName: 'Coverage Report'
+                    ])
+                }
+            }
+        }
+        
+        stage('Security Scan') {
+            steps {
+                dir('app') {
+                    script {
+                        // Run security scan on Docker image
+                        sh "docker run --rm -v /var/run/docker.sock:/var/run/docker.sock aquasec/trivy:latest image ${APP_NAME}:${IMAGE_TAG} || true"
+                    }
+                }
+            }
+        }
+        
+        stage('Push Image') {
+            when {
+                anyOf {
+                    branch 'main'
+                    branch 'master'
+                }
+            }
+            steps {
+                script {
+                    // Push to registry
+                    sh """
+                        docker tag ${APP_NAME}:${IMAGE_TAG} ${REGISTRY}/${APP_NAME}:${IMAGE_TAG}
+                        docker tag ${APP_NAME}:${IMAGE_TAG} ${REGISTRY}/${APP_NAME}:latest
+                        docker push ${REGISTRY}/${APP_NAME}:${IMAGE_TAG}
+                        docker push ${REGISTRY}/${APP_NAME}:latest
+                    """
+                }
+            }
+        }
+        
+        stage('Deploy to Development') {
+            when {
+                anyOf {
+                    branch 'main'
+                    branch 'master'
+                }
+            }
+            steps {
+                script {
+                    // Deploy to development environment
+                    sh """
+                        cd app
+                        # Update image tag in kustomization
+                        sed -i 's/newTag: .*/newTag: ${IMAGE_TAG}/' k8s/kustomization.yaml
+                        
+                        # Apply to development namespace
+                        kubectl apply -k k8s/
+                        
+                        # Wait for rollout
+                        kubectl rollout status deployment/${APP_NAME} -n image-recognition --timeout=300s
+                    """
+                }
+            }
+        }
+        
+        stage('Integration Tests') {
+            when {
+                anyOf {
+                    branch 'main'
+                    branch 'master'
+                }
+            }
+            steps {
+                dir('app') {
+                    script {
+                        // Run integration tests against deployed application
+                        sh """
+                            source venv/bin/activate
+                            python -m pytest tests/test_integration.py -v
+                        """
+                    }
+                }
+            }
+        }
+        
+        stage('Deploy to Production') {
+            when {
+                allOf {
+                    anyOf {
+                        branch 'main'
+                        branch 'master'
+                    }
+                    expression { 
+                        return env.DEPLOY_TO_PROD == 'true' 
+                    }
+                }
+            }
+            steps {
+                script {
+                    // Manual approval for production deployment
+                    input message: 'Deploy to production?', ok: 'Deploy'
+                    
+                    // Deploy to production
+                    sh """
+                        cd app
+                        # Deploy to production namespace
+                        kubectl apply -k k8s/ -n image-recognition-prod
+                        kubectl rollout status deployment/${APP_NAME} -n image-recognition-prod --timeout=300s
+                    """
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            // Clean up
+            sh "docker rmi ${APP_NAME}:${IMAGE_TAG} || true"
+            sh "docker rmi ${APP_NAME}:latest || true"
+        }
+        
+        success {
+            echo 'Pipeline completed successfully!'
+        }
+        
+        failure {
+            echo 'Pipeline failed!'
+            // Send notifications
+            emailext (
+                subject: "Pipeline Failed: ${env.JOB_NAME} - ${env.BUILD_NUMBER}",
+                body: "The pipeline for ${env.JOB_NAME} failed. Please check the build logs.",
+                to: "${env.CHANGE_AUTHOR_EMAIL}"
+            )
+        }
+    }
+}
